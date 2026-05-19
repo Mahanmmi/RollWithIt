@@ -1,0 +1,73 @@
+name: Release
+
+# Triggered when a version tag (e.g. v1.2.3 or 1.2.3) is pushed. The tag itself becomes the
+# mod version baked into the jar's manifest + filename, and the built jar is attached to a
+# GitHub Release created on the same tag.
+on:
+  push:
+    tags:
+      - 'v*'
+      - '[0-9]+.[0-9]+.[0-9]+*'
+
+permissions:
+  contents: write  # required for softprops/action-gh-release to create the release
+
+jobs:
+  build-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 8.8
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.8'
+
+      # Derive the mod version from the tag.
+      # Strips a leading "v" so both `v1.2.3` and `1.2.3` produce `1.2.3`.
+      - name: Resolve mod version from tag
+        id: ver
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG"           >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
+          echo "Resolved mod version: $VERSION (from tag $TAG)"
+
+      - name: Build jar
+        run: gradle build -Pmod_version=${{ steps.ver.outputs.version }} --no-daemon --stacktrace
+
+      # ForgeGradle's `build` produces both the regular jar and a `*-sources.jar`. We only want
+      # the runnable mod jar in the release.
+      - name: Locate built jar
+        id: jar
+        run: |
+          JAR=$(ls build/libs/*.jar | grep -v -- '-sources\.jar$' | grep -v -- '-javadoc\.jar$' | head -n1)
+          if [ -z "$JAR" ]; then
+            echo "::error::No mod jar found in build/libs/"
+            ls -la build/libs/ || true
+            exit 1
+          fi
+          echo "path=$JAR" >> "$GITHUB_OUTPUT"
+          echo "Built jar: $JAR"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: RollWithIt ${{ steps.ver.outputs.version }}
+          draft: false
+          prerelease: ${{ contains(steps.ver.outputs.version, '-') }}
+          generate_release_notes: true
+          files: ${{ steps.jar.outputs.path }}
