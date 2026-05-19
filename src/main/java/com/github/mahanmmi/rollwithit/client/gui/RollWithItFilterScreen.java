@@ -77,7 +77,11 @@ public class RollWithItFilterScreen extends Screen {
     // cached options drawn from the DB
     private final List<ResourceLocation> availableTaskTypes;
     private final List<ResourceLocation> availableRewardItems;
-    private List<String> currentTaskValues = List.of();
+    /** Each row = a (taskType, taskValue) pair, so the Values list can show "Kill Entity: Pig". */
+    private List<TaskValueEntry> currentTaskValues = List.of();
+
+    /** A (taskType, taskValue) pair shown as one row in the Values sub-tab. */
+    private record TaskValueEntry(ResourceLocation type, String value) {}
 
     // per-list pagination
     private int typesPage  = 0;
@@ -113,14 +117,19 @@ public class RollWithItFilterScreen extends Screen {
 
     private void refreshCurrentTaskValues() {
         BountyDatabase db = BountyDatabaseStore.get();
-        Set<String> union = new HashSet<>();
+        Set<TaskValueEntry> seen = new HashSet<>();
+        List<TaskValueEntry> rows = new ArrayList<>();
         Iterable<ResourceLocation> source = taskTypes.isEmpty() ? availableTaskTypes : taskTypes;
         for (ResourceLocation type : source) {
-            union.addAll(db.taskValuesFor(type, vaultLevel));
+            for (String value : db.taskValuesFor(type, vaultLevel)) {
+                TaskValueEntry e = new TaskValueEntry(type, value);
+                if (seen.add(e)) rows.add(e);
+            }
         }
-        List<String> sorted = new ArrayList<>(union);
-        sorted.sort(Comparator.naturalOrder());
-        this.currentTaskValues = sorted;
+        rows.sort(Comparator
+                .comparing((TaskValueEntry e) -> NameResolver.taskTypeName(e.type()))
+                .thenComparing(e -> NameResolver.taskValueName(e.value())));
+        this.currentTaskValues = rows;
     }
 
     // ---- responsive sizing ----
@@ -211,22 +220,28 @@ public class RollWithItFilterScreen extends Screen {
                     taskTypes::contains,
                     rl -> { taskTypes.add(rl); refreshCurrentTaskValues(); valuesPage = 0; },
                     rl -> { taskTypes.remove(rl); refreshCurrentTaskValues(); valuesPage = 0; },
-                    ResourceLocation::getPath,
+                    NameResolver::taskTypeName,
                     p -> { typesPage = p; rebuildWidgets(); });
             case VALUES -> addPaginatedSelector(
                     bx, listY, bw, listH, currentTaskValues, valuesPage,
-                    taskValues::contains, taskValues::add, taskValues::remove,
-                    Function.identity(),
+                    e -> taskValues.contains(e.value()),
+                    e -> taskValues.add(e.value()),
+                    e -> taskValues.remove(e.value()),
+                    e -> NameResolver.taskTypeName(e.type()) + ": "
+                            + NameResolver.taskValueName(e.value()),
                     p -> { valuesPage = p; rebuildWidgets(); });
         }
     }
 
     private void buildRewardsTab(int bx, int by, int bw) {
-        int listH = paneY() + paneH() - BOTTOM_BAR_H - PADDING - by;
+        // Mirror the Tasks tab's vertical reservation so list rows line up across tabs even
+        // though Rewards has no sub-tab strip of its own (subH 14 + 4 padding = 18).
+        int listY = by + 14 + 4;
+        int listH = paneY() + paneH() - BOTTOM_BAR_H - PADDING - listY;
         addPaginatedSelector(
-                bx, by, bw, listH, availableRewardItems, itemsPage,
+                bx, listY, bw, listH, availableRewardItems, itemsPage,
                 rewardItems::contains, rewardItems::add, rewardItems::remove,
-                ResourceLocation::toString,
+                NameResolver::rewardItemName,
                 p -> { itemsPage = p; rebuildWidgets(); });
     }
 
