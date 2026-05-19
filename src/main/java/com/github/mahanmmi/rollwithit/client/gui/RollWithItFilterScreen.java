@@ -5,11 +5,12 @@ import com.github.mahanmmi.rollwithit.bounty.db.BountyDatabaseStore;
 import com.github.mahanmmi.rollwithit.bounty.filter.BountyFilter;
 import com.github.mahanmmi.rollwithit.bounty.filter.BountyFilterStore;
 import com.mojang.blaze3d.vertex.PoseStack;
+import iskallia.vault.client.gui.framework.ScreenTextures;
 import net.minecraft.client.Minecraft;
-import net.minecraft.client.gui.screens.Screen;
-import net.minecraft.network.chat.TextComponent;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.components.EditBox;
+import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.network.chat.TextComponent;
 import net.minecraft.resources.ResourceLocation;
 
 import javax.annotation.Nullable;
@@ -25,49 +26,73 @@ import java.util.function.IntConsumer;
 import java.util.function.Predicate;
 
 /**
- * Vanilla {@link Screen} overlay for editing the {@link BountyFilter}. Opens on top of VH's bounty
- * table screen; closing returns to it.
+ * Bounty filter editor styled to match VH's bounty table — white nine-slice window with two top
+ * tabs ("Tasks" / "Rewards") drawn from VH's atlas via {@link ScreenTextures}.
  * <p>
- * Layout is intentionally minimal — paginated lists with text labels — so it's resilient to
- * VH UI changes and easy to extend later with proper item icons and a scroll panel.
+ * The pane is sized responsively against the host {@link Screen}'s width/height so it stays usable
+ * on small windows. Each tab renders a single full-width vertical list (paginated) — no overlapping
+ * heading text and no multi-column chip grid.
+ * <p>
+ * Tasks tab nests two sub-tabs ("Types" / "Values"). This keeps the layout one-list-deep at every
+ * point and avoids any text floating between buttons.
+ * <p>
+ * Closing returns to the parent bounty table screen.
  */
 public class RollWithItFilterScreen extends Screen {
 
-    private static final int PANE_W   = 420;
-    private static final int PANE_H   = 260;
-    private static final int ROW_H    = 14;
-    private static final int ROWS     = 8;
+    // Tab visuals.
+    private static final int TAB_W  = 70;
+    private static final int TAB_H  = 18;
+    private static final int TAB_GAP = 2;
+
+    // Layout constants
+    private static final int ROW_H        = 13;
+    private static final int BOTTOM_BAR_H = 26;
+    private static final int PADDING      = 6;
+
+    // Responsive bounds. These intentionally stay tight to roughly match the VH bounty-table
+    // dialog underneath us (~250x200 in scaled px) so the popup feels like a sub-window, not a
+    // full overlay. `Screen#width`/`#height` are already the GUI-scaled Minecraft window
+    // dimensions (Window.getGuiScaledWidth/Height), not the OS monitor size.
+    private static final int MIN_PANE_W = 200;
+    private static final int MAX_PANE_W = 260;
+    private static final int MIN_PANE_H = 150;
+    private static final int MAX_PANE_H = 190;
+
+    private enum Tab        { TASKS, REWARDS }
+    private enum TaskSubTab { TYPES, VALUES }
 
     @Nullable private final Screen parent;
     private final int vaultLevel;
+    private Tab activeTab = Tab.TASKS;
+    private TaskSubTab activeTaskSub = TaskSubTab.TYPES;
 
     // working copy of the filter
     private final Set<ResourceLocation> taskTypes   = new HashSet<>();
     private final Set<String>           taskValues  = new HashSet<>();
     private final Set<ResourceLocation> rewardItems = new HashSet<>();
     private int maxAttempts;
-    private final int tickCooldown; // not edited in v1, preserved
+    private final int tickCooldown;
 
     // cached options drawn from the DB
     private final List<ResourceLocation> availableTaskTypes;
     private final List<ResourceLocation> availableRewardItems;
     private List<String> currentTaskValues = List.of();
 
-    // pagination
+    // per-list pagination
+    private int typesPage  = 0;
     private int valuesPage = 0;
     private int itemsPage  = 0;
 
     private EditBox maxAttemptsBox;
 
     public RollWithItFilterScreen(@Nullable Screen parent, int vaultLevel) {
-        super(new TextComponent("RollWithIt — Bounty Filter (vault level " + vaultLevel + ")"));
+        super(new TextComponent("RollWithIt Filter"));
         this.parent = parent;
         this.vaultLevel = vaultLevel;
 
         BountyDatabase db = BountyDatabaseStore.get();
 
-        // Hard-prune disk filter against current level before populating the working copy. This
-        // ensures that whatever the user sees + later saves is consistent with the current pool.
         BountyFilter.PruneResult pr = BountyFilterStore.getAndPruneFor(db, vaultLevel);
         BountyFilter f = pr.filter();
 
@@ -98,106 +123,146 @@ public class RollWithItFilterScreen extends Screen {
         this.currentTaskValues = sorted;
     }
 
+    // ---- responsive sizing ----
+
+    private int paneW() {
+        return Math.max(MIN_PANE_W, Math.min(MAX_PANE_W, this.width - 40));
+    }
+    private int paneH() {
+        return Math.max(MIN_PANE_H, Math.min(MAX_PANE_H, this.height - 60));
+    }
+    private int paneX() { return (this.width  - paneW()) / 2; }
+    private int paneY() { return (this.height - paneH()) / 2; }
+
+    /** Number of list rows that fit between top of body and the bottom bar (with pagination nav). */
+    private int rows() {
+        int bodyH = paneH() - PADDING - BOTTOM_BAR_H - (ROW_H + 4) /* pagination strip */ - PADDING;
+        return Math.max(3, bodyH / (ROW_H + 1));
+    }
+
+    // ---- init & widget rebuild ----
+
     @Override
     protected void init() {
         super.init();
-        // Preserve EditBox text across rebuilds within the same init pass.
         rebuildWidgets();
     }
 
     private void rebuildWidgets() {
-        // Snapshot edit-box text before clearing.
         if (maxAttemptsBox != null) {
-            String s = maxAttemptsBox.getValue();
-            try { this.maxAttempts = Math.max(1, Math.min(500, Integer.parseInt(s))); }
+            try { this.maxAttempts = Math.max(1, Math.min(500, Integer.parseInt(maxAttemptsBox.getValue()))); }
             catch (NumberFormatException ignored) {}
         }
         clearWidgets();
 
-        int x = (this.width  - PANE_W) / 2;
-        int y = (this.height - PANE_H) / 2;
+        int x = paneX();
+        int y = paneY();
+        int w = paneW();
+        int h = paneH();
 
-        // ---- Task type toggle row(s) ----
-        int ttX = x + 8;
-        int ttY = y + 24;
-        if (availableTaskTypes.isEmpty()) {
-            // no DB? show note
-        } else {
-            for (ResourceLocation type : availableTaskTypes) {
-                boolean on = taskTypes.contains(type);
-                String label = (on ? "[x] " : "[ ] ") + type.getPath();
-                final ResourceLocation captured = type;
-                addRenderableWidget(new Button(ttX, ttY, 130, 16, new TextComponent(label), b -> {
-                    if (!taskTypes.add(captured)) taskTypes.remove(captured);
-                    refreshCurrentTaskValues();
-                    valuesPage = 0;
-                    rebuildWidgets();
-                }));
-                ttX += 134;
-                if (ttX + 130 > x + PANE_W - 8) { ttX = x + 8; ttY += 18; }
-            }
-            if (ttX != x + 8) ttY += 18; // close the row
+        // Top tabs sit on the pane's top edge.
+        int tabsY = y - TAB_H + 4;
+        addTabHitbox(x + 10,                       tabsY, Tab.TASKS,   "Tasks");
+        addTabHitbox(x + 10 + TAB_W + TAB_GAP,     tabsY, Tab.REWARDS, "Rewards");
+
+        // Body
+        int bodyX = x + PADDING;
+        int bodyY = y + PADDING;
+        int bodyW = w - 2 * PADDING;
+
+        switch (activeTab) {
+            case TASKS   -> buildTasksTab(bodyX, bodyY, bodyW);
+            case REWARDS -> buildRewardsTab(bodyX, bodyY, bodyW);
         }
 
-        int listY = ttY + 12;
-
-        // ---- Left pane: task values ----
-        addColumnLabel(x + 8, listY - 10, "Task values (any-of)");
-        addPaginatedSelector(
-                x + 8, listY, 200, currentTaskValues, valuesPage,
-                taskValues::contains, taskValues::add, taskValues::remove,
-                Function.identity(),
-                p -> { valuesPage = p; rebuildWidgets(); }
-        );
-
-        // ---- Right pane: reward items ----
-        addColumnLabel(x + 212, listY - 10, "Reward items (any-of)");
-        addPaginatedSelector(
-                x + 212, listY, 200, availableRewardItems, itemsPage,
-                rewardItems::contains, rewardItems::add, rewardItems::remove,
-                ResourceLocation::toString,
-                p -> { itemsPage = p; rebuildWidgets(); }
-        );
-
-        // ---- Bottom row: max attempts + save/reset/cancel ----
-        int botY = y + PANE_H - 32;
-
-        maxAttemptsBox = new EditBox(this.font, x + 8, botY, 60, 18, new TextComponent("Max"));
+        // Bottom bar. Labels and button widths are tuned so everything fits at MIN_PANE_W.
+        int botY = y + h - BOTTOM_BAR_H + 4;
+        int labelW = this.font.width("Attempts:") + 4;
+        maxAttemptsBox = new EditBox(this.font, bodyX + labelW, botY, 28, 16, new TextComponent("Max"));
         maxAttemptsBox.setValue(String.valueOf(maxAttempts));
         maxAttemptsBox.setFilter(s -> s.isEmpty() || s.matches("\\d{1,3}"));
         addRenderableWidget(maxAttemptsBox);
 
-        addRenderableWidget(new Button(x + 74, botY, 70, 18,
-                new TextComponent("Clear All"), b -> resetAll()));
-
-        addRenderableWidget(new Button(x + PANE_W - 158, botY, 70, 18,
-                new TextComponent("Save"), b -> saveAndClose()));
-        addRenderableWidget(new Button(x + PANE_W - 84, botY, 70, 18,
-                new TextComponent("Cancel"), b -> onClose()));
+        int btnH = 16;
+        int rightEdge = bodyX + bodyW;
+        // 3 right-aligned buttons; widths tuned per label.
+        int cancelW = 38, saveW = 32, clearW = 32;
+        addRenderableWidget(new Button(rightEdge - cancelW,                     botY, cancelW, btnH, new TextComponent("Cancel"), b -> onClose()));
+        addRenderableWidget(new Button(rightEdge - cancelW - saveW - 2,         botY, saveW,   btnH, new TextComponent("Save"),   b -> saveAndClose()));
+        addRenderableWidget(new Button(rightEdge - cancelW - saveW - clearW - 4, botY, clearW,  btnH, new TextComponent("Clear"),  b -> resetAll()));
     }
 
-    private void addColumnLabel(int x, int y, String text) {
-        // Render via a non-interactive Button so it integrates with the same layer; alternatively
-        // we could draw text in render(). Button is good enough and self-positions.
-        addRenderableWidget(new Button(x, y, 200, 10, new TextComponent(text), b -> {}) {{
-            this.active = false;
-        }});
+    // ---- tab bodies ----
+
+    private void buildTasksTab(int bx, int by, int bw) {
+        // Sub-tabs row (Types | Values)
+        int subY = by;
+        int subW = 60;
+        int subH = 14;
+        addRenderableWidget(new Button(bx,             subY, subW, subH, new TextComponent(subLabel("Types",  activeTaskSub == TaskSubTab.TYPES)),  b -> { activeTaskSub = TaskSubTab.TYPES;  rebuildWidgets(); }));
+        addRenderableWidget(new Button(bx + subW + 2,  subY, subW, subH, new TextComponent(subLabel("Values", activeTaskSub == TaskSubTab.VALUES)), b -> { activeTaskSub = TaskSubTab.VALUES; rebuildWidgets(); }));
+
+        int listY = subY + subH + 4;
+        int listH = paneY() + paneH() - BOTTOM_BAR_H - PADDING - listY;
+
+        switch (activeTaskSub) {
+            case TYPES -> addPaginatedSelector(
+                    bx, listY, bw, listH, availableTaskTypes, typesPage,
+                    taskTypes::contains,
+                    rl -> { taskTypes.add(rl); refreshCurrentTaskValues(); valuesPage = 0; },
+                    rl -> { taskTypes.remove(rl); refreshCurrentTaskValues(); valuesPage = 0; },
+                    ResourceLocation::getPath,
+                    p -> { typesPage = p; rebuildWidgets(); });
+            case VALUES -> addPaginatedSelector(
+                    bx, listY, bw, listH, currentTaskValues, valuesPage,
+                    taskValues::contains, taskValues::add, taskValues::remove,
+                    Function.identity(),
+                    p -> { valuesPage = p; rebuildWidgets(); });
+        }
     }
 
+    private void buildRewardsTab(int bx, int by, int bw) {
+        int listH = paneY() + paneH() - BOTTOM_BAR_H - PADDING - by;
+        addPaginatedSelector(
+                bx, by, bw, listH, availableRewardItems, itemsPage,
+                rewardItems::contains, rewardItems::add, rewardItems::remove,
+                ResourceLocation::toString,
+                p -> { itemsPage = p; rebuildWidgets(); });
+    }
+
+    private static String subLabel(String name, boolean active) {
+        return active ? "▶ " + name : name;
+    }
+
+    /** Adds a hidden Button for tab hit-testing; visuals are drawn in {@link #render}. */
+    private void addTabHitbox(int tx, int ty, Tab tab, String label) {
+        addRenderableWidget(new Button(tx, ty, TAB_W, TAB_H, new TextComponent(""), b -> {
+            if (activeTab != tab) { activeTab = tab; rebuildWidgets(); }
+        }) {
+            @Override public void renderButton(PoseStack ps, int mx, int my, float partial) { /* drawn by screen */ }
+        });
+    }
+
+    /**
+     * Adds a single-column list of selector rows + a pagination strip at the bottom of the
+     * provided area. Each row is a full-width Button so click targets are obvious and no text
+     * ever floats between two buttons.
+     */
     private <T> void addPaginatedSelector(
-            int x, int y, int width,
+            int x, int y, int width, int areaH,
             List<T> items, int page,
             Predicate<T> selected, Consumer<T> select, Consumer<T> deselect,
             Function<T, String> label, IntConsumer onPageChange) {
 
-        int totalPages = Math.max(1, (items.size() + ROWS - 1) / ROWS);
+        int rows = Math.max(1, (areaH - (ROW_H + 4)) / (ROW_H + 1));
+        int totalPages = Math.max(1, (items.size() + rows - 1) / rows);
         int p = Math.max(0, Math.min(page, totalPages - 1));
-        int start = p * ROWS;
-        int end = Math.min(start + ROWS, items.size());
+        int start = p * rows;
+        int end = Math.min(start + rows, items.size());
 
         for (int i = start; i < end; i++) {
             T item = items.get(i);
-            String lbl = (selected.test(item) ? "[x] " : "[ ] ") + label.apply(item);
+            String lbl = (selected.test(item) ? "☑ " : "☐ ") + label.apply(item);
             int row = i - start;
             addRenderableWidget(new Button(x, y + row * (ROW_H + 1), width, ROW_H,
                     new TextComponent(lbl), b -> {
@@ -206,17 +271,15 @@ public class RollWithItFilterScreen extends Screen {
             }));
         }
 
-        if (totalPages > 1) {
-            int navY = y + ROWS * (ROW_H + 1) + 2;
-            addRenderableWidget(new Button(x, navY, 24, 14, new TextComponent("<"),
-                    b -> { if (p > 0) onPageChange.accept(p - 1); }));
-            addRenderableWidget(new Button(x + 28, navY, width - 56, 14,
-                    new TextComponent("page " + (p + 1) + " / " + totalPages), b -> {}) {{
-                this.active = false;
-            }});
-            addRenderableWidget(new Button(x + width - 24, navY, 24, 14, new TextComponent(">"),
-                    b -> { if (p < totalPages - 1) onPageChange.accept(p + 1); }));
-        }
+        int navY = y + rows * (ROW_H + 1) + 2;
+        addRenderableWidget(new Button(x, navY, 20, ROW_H, new TextComponent("<"),
+                b -> { if (p > 0) onPageChange.accept(p - 1); }));
+        Button pageLabel = new Button(x + 22, navY, width - 44, ROW_H,
+                new TextComponent("page " + (p + 1) + " / " + totalPages), b -> {});
+        pageLabel.active = false;
+        addRenderableWidget(pageLabel);
+        addRenderableWidget(new Button(x + width - 20, navY, 20, ROW_H, new TextComponent(">"),
+                b -> { if (p < totalPages - 1) onPageChange.accept(p + 1); }));
     }
 
     private void resetAll() {
@@ -224,6 +287,7 @@ public class RollWithItFilterScreen extends Screen {
         taskValues.clear();
         rewardItems.clear();
         maxAttempts = BountyFilter.DEFAULT_MAX_ATTEMPTS;
+        typesPage = 0;
         valuesPage = 0;
         itemsPage = 0;
         refreshCurrentTaskValues();
@@ -256,14 +320,45 @@ public class RollWithItFilterScreen extends Screen {
 
     @Override
     public void render(PoseStack ps, int mx, int my, float partial) {
-        renderBackground(ps);
-        int x = (this.width  - PANE_W) / 2;
-        int y = (this.height - PANE_H) / 2;
-        // Title centered
-        drawCenteredString(ps, this.font, this.title, this.width / 2, y + 8, 0xFFFFFF);
+        int x = paneX();
+        int y = paneY();
+        int w = paneW();
+        int h = paneH();
+
+        // 1. White nine-slice window.
+        ScreenTextures.DEFAULT_WINDOW_BACKGROUND.blit(ps, x, y, 0, w, h);
+
+        // 2. Tabs.
+        int tabsY = y - TAB_H + 4;
+        drawTab(ps, x + 10,                    tabsY, activeTab == Tab.TASKS,   "Tasks");
+        drawTab(ps, x + 10 + TAB_W + TAB_GAP, tabsY, activeTab == Tab.REWARDS, "Rewards");
+
+        // 3. Bottom-bar label.
+        int botY = y + h - BOTTOM_BAR_H + 4;
+        this.font.draw(ps, new TextComponent("Attempts:"), x + PADDING, botY + 4, 0x3F2A14);
+
+        // 4. Vault-level subtitle (small, top-right of pane).
+        String sub = "lvl " + vaultLevel;
+        int sw = this.font.width(sub);
+        this.font.draw(ps, new TextComponent(sub), x + w - PADDING - sw, y + PADDING - 1, 0x6B5034);
 
         super.render(ps, mx, my, partial);
     }
+
+    private void drawTab(PoseStack ps, int tx, int ty, boolean selected, String label) {
+        if (selected) {
+            ScreenTextures.TAB_BACKGROUND_TOP_SELECTED.blit(ps, tx, ty, 0, TAB_W, TAB_H);
+        } else {
+            ScreenTextures.TAB_BACKGROUND_TOP.blit(ps, tx, ty, 0, TAB_W, TAB_H);
+        }
+        int textColor = selected ? 0x3F2A14 : 0x6B5034;
+        int sw = this.font.width(label);
+        this.font.draw(ps, new TextComponent(label),
+                tx + (TAB_W - sw) / 2f, ty + (TAB_H - 8) / 2f, textColor);
+    }
+
+    @Override
+    public boolean isPauseScreen() { return false; }
 
     @Override
     public void onClose() {
