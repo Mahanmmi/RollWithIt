@@ -5,6 +5,7 @@ import com.github.mahanmmi.rollwithit.bounty.db.BountyDatabaseStore;
 import com.github.mahanmmi.rollwithit.bounty.filter.BountyFilter;
 import com.github.mahanmmi.rollwithit.bounty.filter.BountyFilterStore;
 import com.github.mahanmmi.rollwithit.bounty.refresh.SuperRefreshController;
+import com.github.mahanmmi.rollwithit.client.gui.RWITextures;
 import com.github.mahanmmi.rollwithit.client.gui.RollWithItFilterScreen;
 import iskallia.vault.bounty.Bounty;
 import iskallia.vault.bounty.BountyList;
@@ -17,6 +18,8 @@ import iskallia.vault.client.gui.screen.bounty.element.BountyTableContainerEleme
 import iskallia.vault.container.BountyContainer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.TextComponent;
+import net.minecraft.world.inventory.Slot;
+import net.minecraft.world.item.ItemStack;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
@@ -45,12 +48,17 @@ public abstract class BountyTableContainerElementMixin {
     private void rwi$addSuperRefreshButtons(ISpatial spatial, BountyContainer ctor, CallbackInfo ci) {
         ContainerElementAccessorMixin self = (ContainerElementAccessorMixin) (Object) this;
 
-        // [Super Refresh] — reuses the reroll button texture (it IS a reroll, just smarter).
+        // [Super Refresh] — uses our own button-texture set so we can hot-swap art later
+        // (currently the PNGs are byte-for-byte VH's reroll icon; see RWITextures for the two
+        // bundles: SUPER_REFRESH_TEXTURES for idle, STOP_REFRESH_TEXTURES for the running face).
+        // Stays disabled when there's nothing to reroll, when the player has no pearls in the
+        // slot to pay for a reroll, or when no available bounty is selected. While Super Refresh
+        // is running we keep the button enabled so it doubles as the cancel control.
         self.rwi$addElement(new ButtonElement<>(
                 Spatials.positionXY(120, 117),
-                ScreenTextures.BUTTON_BUTTON_REROLL_TEXTURES,
+                RWITextures.SUPER_REFRESH_TEXTURES,
                 this::rwi$onSuperRefreshClicked
-        ).setDisabled(() -> ctor.getAvailable() == null || ctor.getAvailable().isEmpty()));
+        ).setDisabled(this::rwi$superRefreshDisabled));
 
         // [Configure] — opens the filter screen overlay.
         self.rwi$addElement(new ButtonElement<>(
@@ -86,9 +94,9 @@ public abstract class BountyTableContainerElementMixin {
             return;
         }
 
-        Bounty target = pickTarget();
+        Bounty target = rwi$selectedAvailableBounty();
         if (target == null) {
-            rwi$toast("§cNo available bounty to reroll.");
+            rwi$toast("§cSelect an available bounty first.");
             return;
         }
 
@@ -104,16 +112,36 @@ public abstract class BountyTableContainerElementMixin {
     }
 
     /**
-     * Selects the bounty to reroll: prefer the currently-selected available bounty; otherwise the
-     * first available bounty in the list.
+     * Returns the currently-selected bounty iff it is in the available list (i.e. eligible to
+     * reroll). Active/complete/legendary selections don't count.
      */
-    private Bounty pickTarget() {
+    private Bounty rwi$selectedAvailableBounty() {
         BountyList avail = container.getAvailable();
         if (avail == null || avail.isEmpty()) return null;
-
         Bounty selected = bountyElement != null ? bountyElement.getSelectedBounty() : null;
-        if (selected != null && avail.contains(selected.getId())) return selected;
-        return avail.get(0);
+        if (selected == null) return null;
+        return avail.contains(selected.getId()) ? selected : null;
+    }
+
+    /**
+     * Disabled-state supplier for the Super Refresh button. While a run is active we keep the
+     * button enabled so the same control can cancel the loop; otherwise it disables when there's
+     * nothing to reroll, when no pearls are loaded in the slot, or when no available bounty is
+     * selected.
+     */
+    private boolean rwi$superRefreshDisabled() {
+        if (SuperRefreshController.get().isRunning()) return false;
+        BountyList avail = container.getAvailable();
+        if (avail == null || avail.isEmpty()) return true;
+        if (rwi$pearlCount() <= 0) return true;
+        return rwi$selectedAvailableBounty() == null;
+    }
+
+    private int rwi$pearlCount() {
+        Slot slot = container.getBountyPearlSlot();
+        if (slot == null) return 0;
+        ItemStack stack = slot.getItem();
+        return stack == null || stack.isEmpty() ? 0 : stack.getCount();
     }
 
     private void rwi$toast(String msg) {
