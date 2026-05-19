@@ -1,0 +1,184 @@
+// Source: adapted from VHatCanIRoll by radimous.
+//   https://github.com/radimous/VHatCanIRoll/blob/main/vault-configs.gradle
+//
+// Downloads the official Vault Hunters pack and copies its `config/` and `defaultconfigs/`
+// into `run/` so VH can load its configs in dev. Without this, VH fields like
+// `ModConfigs.VAULT_MAP_ICONS` are null and the client NPEs on startup.
+//
+// Run once with `gradle getVaultConfigs`. Delete `run/config` + `run/defaultconfigs` first to refresh.
+
+import groovy.json.JsonOutput
+import groovy.json.JsonSlurper
+
+def zipUrl = vault_pack_url
+def zipFile = file("build/temp-vault-assets/archive.zip")
+def outputDir = file("build/temp-vault-assets/unzipped")
+def runDir = file("run")
+def allowedNamespaces = ["minecraft:", "the_vault:"]
+
+tasks.register('checkEmptyConfigDirs') {
+    def runConfig = file("${runDir}/config")
+    def runDefaults = file("${runDir}/defaultconfigs")
+
+    runDir.mkdirs()
+
+    if (runConfig.exists()) {
+        throw new GradleException("run/config already exists, delete the directory to update")
+    }
+
+    if (runDefaults.exists()) {
+        throw new GradleException("run/defaultconfigs already exists, delete the directory to update")
+    }
+}
+
+tasks.register('downloadZip') {
+    dependsOn 'checkEmptyConfigDirs'
+    doLast {
+        zipFile.parentFile.mkdirs()
+
+        println "Downloading $zipUrl..."
+        new URL(zipUrl).withInputStream { i ->
+            zipFile.withOutputStream { it << i }
+        }
+    }
+}
+
+tasks.register('unzip') {
+    dependsOn 'downloadZip'
+    doLast {
+        outputDir.mkdirs()
+        copy {
+            from zipTree(zipFile)
+            into outputDir
+        }
+    }
+}
+
+// Strip modded-mod item references so VH doesn't error in dev where those mods aren't present.
+
+def filterByAllowedNamespaces = inputMap -> {
+    inputMap.findAll { key, value ->
+        !(key.contains(":") && !allowedNamespaces.any { ns -> key.startsWith(ns) })
+    }
+}
+
+tasks.register('removeModdedItemsEnchantments') {
+    dependsOn 'unzip'
+    doLast {
+        def inputFile = file("${outputDir}/overrides/config/the_vault/gear_enchantment.json")
+        def json = new JsonSlurper().parseText(inputFile.text)
+
+        if (json.costs instanceof Map) {
+            json.costs = filterByAllowedNamespaces(json.costs)
+        }
+
+        inputFile.text = JsonOutput.prettyPrint(JsonOutput.toJson(json))
+        println "Removed modded items from gear_enchantment.json"
+    }
+}
+
+tasks.register('removeModdedItemsPaxel') {
+    dependsOn 'unzip'
+    doLast {
+        def inputFile = file("${outputDir}/overrides/config/the_vault/paxel.json")
+        def json = new JsonSlurper().parseText(inputFile.text)
+
+        if (json.PULVERIZING_MAP instanceof Map) {
+            def filteredMap = filterByAllowedNamespaces(json.PULVERIZING_MAP)
+            filteredMap = filteredMap.findAll { key, value ->
+                def outputItem = value?.item?.item
+                outputItem instanceof String && allowedNamespaces.any { ns -> outputItem.startsWith(ns) }
+            }
+            json.PULVERIZING_MAP = filteredMap
+        }
+
+        inputFile.text = JsonOutput.prettyPrint(JsonOutput.toJson(json))
+        println "Removed modded items from paxel.json"
+    }
+}
+
+tasks.register('removeModdedItemsAltar') {
+    dependsOn 'unzip'
+    doLast {
+        def inputFile = file("${outputDir}/overrides/config/the_vault/vault_altar/vault_altar_ingredients.json")
+        def json = new JsonSlurper().parseText(inputFile.text)
+
+        if (json.LEVELS instanceof Map) {
+            json.LEVELS.each { levelKey, level ->
+                level.each { categoryName, categoryList ->
+                    if (categoryList instanceof List) {
+                        categoryList.each { entry ->
+                            def items = entry?.value?.items
+                            if (items instanceof List) {
+                                entry.value.items = items.findAll { itemEntry ->
+                                    def itemName = itemEntry?.item
+                                    itemName instanceof String && allowedNamespaces.any { ns -> itemName.startsWith(ns) }
+                                }
+                            }
+                        }
+                        level[categoryName] = categoryList.findAll { entry ->
+                            entry?.value?.items instanceof List && entry.value.items
+                        }
+                    }
+                }
+            }
+        }
+
+        inputFile.text = JsonOutput.prettyPrint(JsonOutput.toJson(json))
+        println "Removed modded items from vault_altar_ingredients.json"
+    }
+}
+
+tasks.register('removeModdedItemsFromConfig') {
+    dependsOn 'unzip', 'removeModdedItemsEnchantments', 'removeModdedItemsPaxel', 'removeModdedItemsAltar'
+    doLast {
+        println "Finished removing modded items from config."
+    }
+}
+
+tasks.register('moveToRun') {
+    dependsOn 'removeModdedItemsFromConfig'
+    finalizedBy 'cleanupVaultAssets'
+    doLast {
+        def overridesConfig = file("${outputDir}/overrides/config")
+        def overridesDefaults = file("${outputDir}/overrides/defaultconfigs")
+        def runConfig = file("${runDir}/config")
+        def runDefaults = file("${runDir}/defaultconfigs")
+
+        runDir.mkdirs()
+
+        if (!overridesConfig.exists()) {
+            throw new GradleException("downloaded config doesn't exist")
+        }
+        if (runConfig.exists()) {
+            throw new GradleException("run/config already exists, delete the directory to update")
+        }
+        println "Moving config -> ${runConfig}"
+        ant.move(file: overridesConfig, todir: runDir)
+
+        if (!overridesDefaults.exists()) {
+            throw new GradleException("downloaded defaultconfigs doesn't exist")
+        }
+        if (runDefaults.exists()) {
+            throw new GradleException("run/defaultconfigs already exists, delete the directory to update")
+        }
+        println "Moving defaultconfigs -> ${runDefaults}"
+        ant.move(file: overridesDefaults, todir: runDir)
+    }
+}
+
+tasks.register('cleanupVaultAssets') {
+    doLast {
+        def vaultAssetsDir = file("build/temp-vault-assets")
+        if (vaultAssetsDir.exists()) {
+            println "Deleting ${vaultAssetsDir}"
+            delete vaultAssetsDir
+        }
+    }
+}
+
+tasks.register('getVaultConfigs') {
+    group = "Vault Configs"
+    description = "Download the VH pack and install configs into run/ so the client can launch."
+    dependsOn 'moveToRun'
+}
