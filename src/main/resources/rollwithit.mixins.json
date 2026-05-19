@@ -14,7 +14,8 @@
     "client.BountyEntitiesConfigAccessor",
     "client.ItemStackPoolAccessor",
     "client.ContainerElementAccessorMixin",
-    "client.BountyTableContainerElementMixin"
+    "client.BountyTableContainerElementMixin",
+    "client.BountyTableElementAccessor"
   ],
   "injectors": {
     "defaultRequire": 1

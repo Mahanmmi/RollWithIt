@@ -2,9 +2,13 @@ package com.github.mahanmmi.rollwithit.bounty.refresh;
 
 import com.github.mahanmmi.rollwithit.Rollwithit;
 import com.github.mahanmmi.rollwithit.bounty.filter.BountyFilter;
+import com.github.mahanmmi.rollwithit.mixin.client.BountyTableElementAccessor;
 import iskallia.vault.bounty.Bounty;
 import iskallia.vault.bounty.BountyList;
 import iskallia.vault.bounty.client.ClientBountyData;
+import iskallia.vault.client.gui.screen.bounty.BountyScreen;
+import iskallia.vault.client.gui.screen.bounty.element.BountyElement;
+import iskallia.vault.client.gui.screen.bounty.element.BountyTableContainerElement;
 import iskallia.vault.container.BountyContainer;
 import iskallia.vault.init.ModConfigs;
 import iskallia.vault.init.ModNetwork;
@@ -200,6 +204,11 @@ public final class SuperRefreshController {
 
         target = newId;
 
+        // Highlight the freshly-rolled bounty in the right pane so the user can watch what we're
+        // rolling. If the bounty screen isn't currently the visible screen (e.g. our filter
+        // overlay is on top), this is a no-op for this tick — that's fine.
+        selectBountyOnScreen(newId);
+
         Optional<Bounty> bountyOpt = container.getBountyById(newId);
         if (bountyOpt.isPresent() && filter.matches(bountyOpt.get())) {
             stop(SuperRefreshState.STOPPED_MATCH);
@@ -207,6 +216,16 @@ public final class SuperRefreshController {
         }
 
         cooldownLeft = filter.tickCooldown();
+    }
+
+    private static void selectBountyOnScreen(UUID id) {
+        Minecraft mc = Minecraft.getInstance();
+        if (!(mc.screen instanceof BountyScreen bountyScreen)) return;
+        BountyTableContainerElement table = bountyScreen.getBountyTableElement();
+        if (table == null) return;
+        BountyElement el = ((BountyTableElementAccessor) table).rollwithit$getBountyElement();
+        if (el == null) return;
+        el.setBounty(id, BountyElement.Status.AVAILABLE);
     }
 
     private void stop(SuperRefreshState reason) {
