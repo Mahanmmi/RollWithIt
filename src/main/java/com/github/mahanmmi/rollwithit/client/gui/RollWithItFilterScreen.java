@@ -366,12 +366,47 @@ public class RollWithItFilterScreen extends Screen {
         int botY = y + h - BOTTOM_BAR_H + 4;
         this.font.draw(ps, new TextComponent("Attempts:"), x + PADDING, botY + 4, 0x3F2A14);
 
-        // 4. Vault-level subtitle (small, top-right of pane).
+        // 4. Vault-level subtitle + per-roll match estimate (small, top-right of pane).
         String sub = "lvl " + vaultLevel;
         int sw = this.font.width(sub);
         this.font.draw(ps, new TextComponent(sub), x + w - PADDING - sw, y + PADDING - 1, 0x6B5034);
 
+        // One line down: cumulative match chance + expected rolls to first match for the working
+        // filter. Renders "Set a filter…" when nothing is constrained yet.
+        BountyFilter working = currentFilter();
+        String est = working.isUnconstrained()
+                ? "Set a filter to estimate odds"
+                : "Match: " + BountyProbabilities.formatPercent(probs.matchPerRoll(working))
+                        + "  " + formatExpectedRolls(probs.expectedRollsToMatch(working));
+        int ew = this.font.width(est);
+        this.font.draw(ps, new TextComponent(est), x + w - PADDING - ew, y + PADDING - 1 + 10, 0x6B5034);
+
         super.render(ps, mx, my, partial);
+    }
+
+    /** Build a snapshot of the in-screen working filter for probability estimation. */
+    private BountyFilter currentFilter() {
+        return new BountyFilter(
+                Set.copyOf(taskTypes),
+                Set.copyOf(taskValues),
+                Set.copyOf(rewardItems),
+                OptionalInt.empty(),
+                Math.max(1, maxAttempts),
+                tickCooldown
+        );
+    }
+
+    /**
+     * Renders {@code 1/p} expected-rolls as a compact "(~N rolls)" suffix. Uses bucket cutoffs so
+     * astronomically rare combos don't show a "~382194 rolls" number that no one would actually
+     * sit through.
+     */
+    private static String formatExpectedRolls(double rolls) {
+        if (Double.isInfinite(rolls) || Double.isNaN(rolls)) return "(n/a)";
+        if (rolls < 1.5)    return "(~1 roll)";
+        if (rolls < 1000)   return "(~" + Math.round(rolls) + " rolls)";
+        if (rolls < 10_000) return "(~" + Math.round(rolls / 100.0) * 100 + " rolls)";
+        return "(>10k rolls)";
     }
 
     private void drawTab(PoseStack ps, int tx, int ty, boolean selected, String label) {

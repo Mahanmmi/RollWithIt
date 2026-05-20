@@ -1,11 +1,14 @@
 package com.github.mahanmmi.rollwithit.bounty.db;
 
+import com.github.mahanmmi.rollwithit.bounty.filter.BountyFilter;
 import net.minecraft.resources.ResourceLocation;
 
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Level-pinned probability calculator for a single {@link BountyDatabase} snapshot.
@@ -116,6 +119,82 @@ public final class BountyProbabilities {
             p += pe.getValue() * pInPool;
         }
         return p;
+    }
+
+    // -------------------------------------------------- filter-match probability
+
+    /**
+     * Probability that a single Super Refresh roll produces a bounty satisfying the given filter.
+     * <p>
+     * Mirrors {@link BountyFilter#matches} for the matching semantics:
+     * <ul>
+     *   <li>Task side: a row passes if its type is in {@code taskTypes} (or that set is empty)
+     *       <strong>and</strong> its value is in {@code taskValues} (or that set is empty).</li>
+     *   <li>Reward side: the reward pool linked to that row must produce at least one item from
+     *       {@code rewardItems} (or that set is empty, in which case the reward side passes
+     *       trivially). Multi-stack reward pools use the {@code 1 − (1 − p)^E[N]} approximation.</li>
+     * </ul>
+     * Returns {@code 0.0} for an {@linkplain BountyFilter#isUnconstrained() unconstrained} filter
+     * so callers can treat it as the "would not actually run" sentinel.
+     * <p>
+     * {@link BountyFilter#minVaultExp()} is intentionally ignored here — VH XP is a continuous
+     * value sampled from a range, not enumerable from our DB, so we'd over- or under-estimate.
+     * The UI doesn't surface that knob anyway.
+     */
+    public double matchPerRoll(BountyFilter f) {
+        if (f == null || f.isUnconstrained()) return 0.0;
+
+        Set<String> rewardItemIds = new HashSet<>(f.rewardItems().size());
+        for (ResourceLocation rl : f.rewardItems()) rewardItemIds.add(rl.toString());
+
+        double pMatch = 0.0;
+        for (Map.Entry<ResourceLocation, List<BountyTaskRow>> e : tasksByType.entrySet()) {
+            ResourceLocation type = e.getKey();
+            if (!f.taskTypes().isEmpty() && !f.taskTypes().contains(type)) continue;
+            double pT = taskType(type);
+            if (pT <= 0) continue;
+
+            long totalW = 0;
+            for (BountyTaskRow r : e.getValue()) totalW += r.weight();
+            if (totalW == 0) continue;
+
+            for (BountyTaskRow r : e.getValue()) {
+                if (!f.taskValues().isEmpty() && !f.taskValues().contains(r.value())) continue;
+                double pEntry = pT * (r.weight() / (double) totalW);
+                pMatch += pEntry * rewardPoolMatchProbability(r.rewardPool(), rewardItemIds);
+            }
+        }
+        return pMatch;
+    }
+
+    /**
+     * Expected number of Super Refresh rolls to land a first match for {@code filter}. Returns
+     * {@link Double#POSITIVE_INFINITY} when the per-roll probability is zero (no possible match
+     * given current pool & filter), and {@code 1.0} when the filter is satisfied on every roll.
+     */
+    public double expectedRollsToMatch(BountyFilter filter) {
+        double p = matchPerRoll(filter);
+        if (p <= 0.0) return Double.POSITIVE_INFINITY;
+        return 1.0 / p;
+    }
+
+    /** P(reward rolled from pool {@code poolName} contains at least one item in {@code targets}). */
+    private double rewardPoolMatchProbability(String poolName, Set<String> targets) {
+        if (targets.isEmpty()) return 1.0; // no reward filter ⇒ any reward passes
+        RewardRow row = rewardsByPool.get(poolName);
+        if (row == null) return 0.0;
+
+        long total = 0;
+        long matching = 0;
+        for (ItemRewardEntry it : row.items()) {
+            total += it.weight();
+            if (targets.contains(it.itemId())) matching += it.weight();
+        }
+        if (total == 0 || matching == 0) return 0.0;
+
+        double pPerStack = matching / (double) total;
+        double avgStacks = Math.max(1.0, (row.minTotalStacks() + row.maxTotalStacks()) / 2.0);
+        return 1.0 - Math.pow(1.0 - pPerStack, avgStacks);
     }
 
     // -------------------------------------------------- helpers
