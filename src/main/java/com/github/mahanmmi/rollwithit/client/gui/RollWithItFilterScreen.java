@@ -55,8 +55,8 @@ public class RollWithItFilterScreen extends Screen {
     // dialog underneath us (~250x200 in scaled px) so the popup feels like a sub-window, not a
     // full overlay. `Screen#width`/`#height` are already the GUI-scaled Minecraft window
     // dimensions (Window.getGuiScaledWidth/Height), not the OS monitor size.
-    private static final int MIN_PANE_W = 200;
-    private static final int MAX_PANE_W = 260;
+    private static final int MIN_PANE_W = 220;
+    private static final int MAX_PANE_W = 280;
     private static final int MIN_PANE_H = 150;
     private static final int MAX_PANE_H = 190;
 
