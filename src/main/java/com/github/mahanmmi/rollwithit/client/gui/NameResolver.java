@@ -12,6 +12,8 @@ import net.minecraft.world.level.block.Block;
 import net.minecraftforge.registries.ForgeRegistries;
 
 import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Resolves the raw ResourceLocations / objective strings stored in {@code BountyDatabase} into the
@@ -77,7 +79,17 @@ public final class NameResolver {
         Component objective = BountyScreen.OBJECTIVE_NAME.get(raw);
         if (objective != null) return objective.getString();
 
-        // 3. Try as ResourceLocation — entity, item, then block. NOTE: Forge registries return
+        // 3. NBT-shaped EntityPredicate toString like {id:"minecraft:elder_guardian", ...}.
+        // VH stores vanilla-entity kill targets as a PartialCompoundNbt-style predicate whose
+        // String.valueOf() emits a curly-braced NBT compound; we extract its id and resolve it
+        // through the entity registry the same way as a bare ResourceLocation.
+        ResourceLocation nbtEntityId = extractEntityIdFromNbtForm(raw);
+        if (nbtEntityId != null && ForgeRegistries.ENTITIES.containsKey(nbtEntityId)) {
+            EntityType<?> et = ForgeRegistries.ENTITIES.getValue(nbtEntityId);
+            if (et != null) return et.getDescription().getString();
+        }
+
+        // 4. Try as ResourceLocation — entity, item, then block. NOTE: Forge registries return
         // the registry's *default value* on miss (entity=minecraft:pig, item/block=minecraft:air),
         // so we must containsKey() first to detect genuine matches.
         ResourceLocation rl = ResourceLocation.tryParse(raw);
@@ -130,6 +142,20 @@ public final class NameResolver {
             }
         }
         return sb.toString();
+    }
+
+    /**
+     * Matches an {@code id:"<namespace>:<path>"} field anywhere inside a NBT-compound-style
+     * string. Quotes around both the key and value are optional so {@code id:"minecraft:pig"},
+     * {@code "id":"minecraft:pig"} and {@code id:minecraft:pig} all parse.
+     */
+    private static final Pattern NBT_ENTITY_ID = Pattern.compile(
+            "\"?id\"?\\s*:\\s*\"?([a-z0-9_.-]+:[a-z0-9_./-]+)\"?");
+
+    private static ResourceLocation extractEntityIdFromNbtForm(String raw) {
+        if (raw == null || raw.length() < 5 || raw.charAt(0) != '{') return null;
+        Matcher m = NBT_ENTITY_ID.matcher(raw);
+        return m.find() ? ResourceLocation.tryParse(m.group(1)) : null;
     }
 
     private static String stripNamespace(String s) {
