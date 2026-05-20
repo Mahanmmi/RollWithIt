@@ -36,6 +36,15 @@ import java.util.Set;
  */
 public final class BountyDatabaseBuilder {
 
+    /**
+     * Reward-pool names from VH's {@code bounty/rewards.json} that we deliberately exclude from
+     * our database. Legendary bounties are not user-rerollable (they're spawned through a separate
+     * legendary slot in {@link iskallia.vault.container.BountyContainer#getLegendary()}), so
+     * surfacing the {@code "legendary"} pool in our filter would let players configure goals that
+     * can never be hit by Super Refresh.
+     */
+    private static final Set<String> EXCLUDED_REWARD_POOLS = Set.of("legendary");
+
     private BountyDatabaseBuilder() {}
 
     public static BountyDatabase build() {
@@ -125,6 +134,7 @@ public final class BountyDatabaseBuilder {
         List<RewardRow> out = new ArrayList<>();
         for (Map.Entry<String, LevelEntryMap<RewardConfig.RewardEntry>> p : pools.entrySet()) {
             String poolName = p.getKey();
+            if (EXCLUDED_REWARD_POOLS.contains(poolName)) continue; // e.g. "legendary"
             LevelEntryMap<RewardConfig.RewardEntry> levelMap = p.getValue();
             if (levelMap == null) continue;
 

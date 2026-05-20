@@ -2,6 +2,7 @@ package com.github.mahanmmi.rollwithit.client.gui;
 
 import com.github.mahanmmi.rollwithit.bounty.db.BountyDatabase;
 import com.github.mahanmmi.rollwithit.bounty.db.BountyDatabaseStore;
+import com.github.mahanmmi.rollwithit.bounty.db.BountyProbabilities;
 import com.github.mahanmmi.rollwithit.bounty.filter.BountyFilter;
 import com.github.mahanmmi.rollwithit.bounty.filter.BountyFilterStore;
 import com.mojang.blaze3d.vertex.PoseStack;
@@ -77,6 +78,8 @@ public class RollWithItFilterScreen extends Screen {
     // cached options drawn from the DB
     private final List<ResourceLocation> availableTaskTypes;
     private final List<ResourceLocation> availableRewardItems;
+    /** Probability calculator pinned to {@link #vaultLevel}; cheap to query, never changes here. */
+    private final BountyProbabilities probs;
     /** Each row = a (taskType, taskValue) pair, so the Values list can show "Kill Entity: Pig". */
     private List<TaskValueEntry> currentTaskValues = List.of();
 
@@ -112,6 +115,7 @@ public class RollWithItFilterScreen extends Screen {
         this.availableRewardItems = db.rewardItemsForLevel(vaultLevel).stream()
                 .sorted(Comparator.comparing(ResourceLocation::toString))
                 .toList();
+        this.probs = new BountyProbabilities(db, vaultLevel);
         refreshCurrentTaskValues();
     }
 
@@ -220,15 +224,17 @@ public class RollWithItFilterScreen extends Screen {
                     taskTypes::contains,
                     rl -> { taskTypes.add(rl); refreshCurrentTaskValues(); valuesPage = 0; },
                     rl -> { taskTypes.remove(rl); refreshCurrentTaskValues(); valuesPage = 0; },
-                    NameResolver::taskTypeName,
+                    rl -> withPercent(NameResolver.taskTypeName(rl), probs.taskType(rl)),
                     p -> { typesPage = p; rebuildWidgets(); });
             case VALUES -> addPaginatedSelector(
                     bx, listY, bw, listH, currentTaskValues, valuesPage,
                     e -> taskValues.contains(e.value()),
                     e -> taskValues.add(e.value()),
                     e -> taskValues.remove(e.value()),
-                    e -> NameResolver.taskTypeName(e.type()) + ": "
-                            + NameResolver.taskValueName(e.value()),
+                    e -> withPercent(
+                            NameResolver.taskTypeName(e.type()) + ": "
+                                    + NameResolver.taskValueName(e.value()),
+                            probs.taskValue(e.type(), e.value())),
                     p -> { valuesPage = p; rebuildWidgets(); });
         }
     }
@@ -241,8 +247,16 @@ public class RollWithItFilterScreen extends Screen {
         addPaginatedSelector(
                 bx, listY, bw, listH, availableRewardItems, itemsPage,
                 rewardItems::contains, rewardItems::add, rewardItems::remove,
-                NameResolver::rewardItemName,
+                rl -> withPercent(NameResolver.rewardItemName(rl), probs.rewardItem(rl)),
                 p -> { itemsPage = p; rebuildWidgets(); });
+    }
+
+    /**
+     * Appends a "— x.x%" suffix to a row label so users can see how likely a single Super Refresh
+     * roll is to surface that task or contain that reward item at their current vault level.
+     */
+    private static String withPercent(String label, double p) {
+        return label + "  — " + BountyProbabilities.formatPercent(p);
     }
 
     private static String subLabel(String name, boolean active) {
