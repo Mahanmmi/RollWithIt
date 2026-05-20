@@ -5,6 +5,7 @@ import com.github.mahanmmi.rollwithit.bounty.db.BountyDatabaseStore;
 import com.github.mahanmmi.rollwithit.bounty.filter.BountyFilter;
 import com.github.mahanmmi.rollwithit.bounty.filter.BountyFilterStore;
 import com.github.mahanmmi.rollwithit.bounty.refresh.SuperRefreshController;
+import com.github.mahanmmi.rollwithit.client.gui.DynamicButtonElement;
 import com.github.mahanmmi.rollwithit.client.gui.RWITextures;
 import com.github.mahanmmi.rollwithit.client.gui.RollWithItFilterScreen;
 import iskallia.vault.bounty.Bounty;
@@ -48,15 +49,17 @@ public abstract class BountyTableContainerElementMixin {
     private void rwi$addSuperRefreshButtons(ISpatial spatial, BountyContainer ctor, CallbackInfo ci) {
         ContainerElementAccessorMixin self = (ContainerElementAccessorMixin) (Object) this;
 
-        // [Super Refresh] — uses our own button-texture set so we can hot-swap art later
-        // (currently the PNGs are byte-for-byte VH's reroll icon; see RWITextures for the two
-        // bundles: SUPER_REFRESH_TEXTURES for idle, STOP_REFRESH_TEXTURES for the running face).
+        // [Super Refresh] — uses our own button-texture set, and live-swaps between the two
+        // bundles in RWITextures (SUPER_REFRESH_TEXTURES while idle / STOP_REFRESH_TEXTURES while
+        // the loop is running) via DynamicButtonElement.
         // Stays disabled when there's nothing to reroll, when the player has no pearls in the
         // slot to pay for a reroll, or when no available bounty is selected. While Super Refresh
         // is running we keep the button enabled so it doubles as the cancel control.
-        self.rwi$addElement(new ButtonElement<>(
+        self.rwi$addElement(new DynamicButtonElement(
                 Spatials.positionXY(120, 117),
-                RWITextures.SUPER_REFRESH_TEXTURES,
+                () -> SuperRefreshController.get().isRunning()
+                        ? RWITextures.STOP_REFRESH_TEXTURES
+                        : RWITextures.SUPER_REFRESH_TEXTURES,
                 this::rwi$onSuperRefreshClicked
         ).setDisabled(this::rwi$superRefreshDisabled));
 

@@ -2,7 +2,7 @@
 
 **Stop rerolling your bounty pearls by hand. Tell RollWithIt what you want — it keeps rolling until it gets it.**
 
-A client-side companion mod for **[Vault Hunters: Third Edition](https://www.curseforge.com/minecraft/modpacks/vault-hunters-1-18-2)** that adds a "Super Refresh" loop to the bounty table. Set a filter for the task type / task value / reward item you actually want, click one button, and let the mod spin the reroll for you until a matching bounty drops or you run out of pearls.
+A client-side addon for **[Vault Hunters: Third Edition](https://www.curseforge.com/minecraft/modpacks/vault-hunters-1-18-2)** that adds a "Super Refresh" loop to the bounty table. Set a filter for the task type / task value / reward item you actually want, click one button, and let the mod spin the reroll for you until a matching bounty drops or you run out of pearls.
 
 ---
 
