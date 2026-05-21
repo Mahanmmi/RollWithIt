@@ -109,11 +109,13 @@ public class RollWithItFilterScreen extends Screen {
         this.maxAttempts = f.maxAttempts();
         this.tickCooldown = f.tickCooldown();
 
+        // Sort by the same human-readable label the user sees on the button so the list reads
+        // alphabetically by display name ("Damage Entity" before "Kill Entity"), not by raw id.
         this.availableTaskTypes = db.tasksForLevel(vaultLevel).keySet().stream()
-                .sorted(Comparator.comparing(ResourceLocation::toString))
+                .sorted(Comparator.comparing(NameResolver::taskTypeName, String.CASE_INSENSITIVE_ORDER))
                 .toList();
         this.availableRewardItems = db.rewardItemsForLevel(vaultLevel).stream()
-                .sorted(Comparator.comparing(ResourceLocation::toString))
+                .sorted(Comparator.comparing(NameResolver::rewardItemName, String.CASE_INSENSITIVE_ORDER))
                 .toList();
         this.probs = new BountyProbabilities(db, vaultLevel);
         refreshCurrentTaskValues();
@@ -130,9 +132,11 @@ public class RollWithItFilterScreen extends Screen {
                 if (seen.add(e)) rows.add(e);
             }
         }
+        // Alphabetical by displayed label "<Type>: <Value>" — sort by type prefix first
+        // (matches what users see) then by value, both case-insensitive.
         rows.sort(Comparator
-                .comparing((TaskValueEntry e) -> NameResolver.taskTypeName(e.type()))
-                .thenComparing(e -> NameResolver.taskValueName(e.value())));
+                .comparing((TaskValueEntry e) -> NameResolver.taskTypeName(e.type()), String.CASE_INSENSITIVE_ORDER)
+                .thenComparing(e -> NameResolver.taskValueName(e.value()), String.CASE_INSENSITIVE_ORDER));
         this.currentTaskValues = rows;
     }
 
