@@ -47,7 +47,10 @@ public class RollWithItFilterScreen extends Screen {
     private static final int TAB_GAP = 2;
 
     // Layout constants
+    /** Height of compact rows like the pagination strip and the bottom-bar buttons. */
     private static final int ROW_H        = 13;
+    /** Height of the main task/reward selector rows — taller so the chip text breathes. */
+    private static final int SELECT_ROW_H = ROW_H + 4;
     private static final int BOTTOM_BAR_H = 26;
     private static final int PADDING      = 6;
 
@@ -287,7 +290,9 @@ public class RollWithItFilterScreen extends Screen {
             Predicate<T> selected, Consumer<T> select, Consumer<T> deselect,
             Function<T, String> label, IntConsumer onPageChange) {
 
-        int rows = Math.max(1, (areaH - (ROW_H + 4)) / (ROW_H + 1));
+        // Reserve space for the pagination strip (ROW_H) + its 4px gap from the last row.
+        int rowSpacing = SELECT_ROW_H + 1;
+        int rows = Math.max(1, (areaH - (ROW_H + 4)) / rowSpacing);
         int totalPages = Math.max(1, (items.size() + rows - 1) / rows);
         int p = Math.max(0, Math.min(page, totalPages - 1));
         int start = p * rows;
@@ -297,14 +302,14 @@ public class RollWithItFilterScreen extends Screen {
             T item = items.get(i);
             String lbl = (selected.test(item) ? "☑ " : "☐ ") + label.apply(item);
             int row = i - start;
-            addRenderableWidget(new Button(x, y + row * (ROW_H + 1), width, ROW_H,
+            addRenderableWidget(new Button(x, y + row * rowSpacing, width, SELECT_ROW_H,
                     new TextComponent(lbl), b -> {
                 if (selected.test(item)) deselect.accept(item); else select.accept(item);
                 rebuildWidgets();
             }));
         }
 
-        int navY = y + rows * (ROW_H + 1) + 2;
+        int navY = y + rows * rowSpacing + 2;
         addRenderableWidget(new Button(x, navY, 20, ROW_H, new TextComponent("<"),
                 b -> { if (p > 0) onPageChange.accept(p - 1); }));
         Button pageLabel = new Button(x + 22, navY, width - 44, ROW_H,
