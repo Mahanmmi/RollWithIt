@@ -112,15 +112,30 @@ public class RollWithItFilterScreen extends Screen {
         this.maxAttempts = f.maxAttempts();
         this.tickCooldown = f.tickCooldown();
 
+        this.probs = new BountyProbabilities(db, vaultLevel);
+
+        // Drop anything that's literally unrollable at this level (p == 0). Near-zero entries
+        // (formatted as "<0.01%") still appear — only the actual zeros are hidden.
         // Sort by the same human-readable label the user sees on the button so the list reads
         // alphabetically by display name ("Damage Entity" before "Kill Entity"), not by raw id.
         this.availableTaskTypes = db.tasksForLevel(vaultLevel).keySet().stream()
+                .filter(rl -> probs.taskType(rl) > 0)
                 .sorted(Comparator.comparing(NameResolver::taskTypeName, String.CASE_INSENSITIVE_ORDER))
                 .toList();
         this.availableRewardItems = db.rewardItemsForLevel(vaultLevel).stream()
+                .filter(rl -> probs.rewardItem(rl) > 0)
                 .sorted(Comparator.comparing(NameResolver::rewardItemName, String.CASE_INSENSITIVE_ORDER))
                 .toList();
-        this.probs = new BountyProbabilities(db, vaultLevel);
+
+        // Backward-compat hygiene: a previously-saved selection may include entries that the
+        // newly-applied 0%-filter would have hidden (e.g. unreachable values for this level, or
+        // entries that became rollable=0 after a VH balance change). Drop them silently from the
+        // in-memory working set so the user can't see them as "selected but invisible".
+        this.taskTypes.removeIf(rl -> probs.taskType(rl) <= 0);
+        this.rewardItems.removeIf(rl -> probs.rewardItem(rl) <= 0);
+        this.taskValues.removeIf(v -> availableTaskTypes.stream()
+                .noneMatch(t -> probs.taskValue(t, v) > 0));
+
         refreshCurrentTaskValues();
     }
 
@@ -131,6 +146,10 @@ public class RollWithItFilterScreen extends Screen {
         Iterable<ResourceLocation> source = taskTypes.isEmpty() ? availableTaskTypes : taskTypes;
         for (ResourceLocation type : source) {
             for (String value : db.taskValuesFor(type, vaultLevel)) {
+                // Hide unrollable values (e.g. a type filtered out for level reasons should
+                // never list any of its values, and any value with a zero relative weight
+                // inside its bracket would also be filtered here).
+                if (probs.taskValue(type, value) <= 0) continue;
                 TaskValueEntry e = new TaskValueEntry(type, value);
                 if (seen.add(e)) rows.add(e);
             }

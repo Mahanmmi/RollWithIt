@@ -4,7 +4,10 @@ import com.github.mahanmmi.rollwithit.Rollwithit;
 import com.github.mahanmmi.rollwithit.bounty.db.BountyDatabase;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.integrated.IntegratedServer;
 import net.minecraftforge.fml.loading.FMLPaths;
 
 import java.io.IOException;
@@ -18,29 +21,42 @@ import java.util.OptionalInt;
 import java.util.Set;
 
 /**
- * Persistent singleton for the currently configured {@link BountyFilter}.
+ * Persistent per-world / per-server {@link BountyFilter} store.
  * <p>
- * Stored globally at {@code config/rollwithit/filter.json} (one preset for v1; multi-preset is a
- * future addition). Lazy-loaded on first {@link #get()}.
+ * <h3>File layout</h3>
+ * <pre>
+ *   config/rollwithit/
+ *     filter.json                 ← legacy global preset, read-only fallback after upgrade
+ *     filters/
+ *       world_New_World.json      ← singleplayer (sanitized save name)
+ *       server_play.example.com.json ← multiplayer (sanitized {@code ServerData.ip})
+ *       default.json              ← used when neither context is available
+ * </pre>
+ * The active path is recomputed on every {@link #get()}; when the current world / server changes
+ * (e.g. switching from one save to another), the cached filter is invalidated and the new file is
+ * loaded. New worlds inherit the legacy {@code filter.json} once on first read, so users coming
+ * from earlier versions don't have to reconfigure.
  */
 public final class BountyFilterStore {
 
-    private static final Path FILE = FMLPaths.CONFIGDIR.get()
-            .resolve("rollwithit")
-            .resolve("filter.json");
+    private static final Path CONFIG_ROOT = FMLPaths.CONFIGDIR.get().resolve("rollwithit");
+    private static final Path LEGACY_FILE = CONFIG_ROOT.resolve("filter.json");
+    private static final Path PER_CONTEXT_DIR = CONFIG_ROOT.resolve("filters");
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
 
     private static volatile BountyFilter current = BountyFilter.empty();
-    private static volatile boolean loaded = false;
+    /** Key the in-memory {@link #current} corresponds to; null until first load. */
+    private static volatile String loadedKey = null;
 
     private BountyFilterStore() {}
 
     public static BountyFilter get() {
-        if (!loaded) loadOnce();
+        ensureLoadedForCurrentContext();
         return current;
     }
 
     public static synchronized void set(BountyFilter filter) {
+        ensureLoadedForCurrentContext();
         current = filter == null ? BountyFilter.empty() : filter;
         save();
     }
@@ -62,36 +78,100 @@ public final class BountyFilterStore {
         return r;
     }
 
-    private static synchronized void loadOnce() {
-        if (loaded) return;
-        loaded = true;
+    // ------------------------------------------------------------ context resolution
+
+    /**
+     * @return a stable, filesystem-safe key for the player's current world / server context. Used
+     *         as the filename stem under {@link #PER_CONTEXT_DIR}.
+     */
+    private static String currentContextKey() {
         try {
-            if (Files.exists(FILE)) {
-                String json = Files.readString(FILE);
-                Dto dto = GSON.fromJson(json, Dto.class);
-                current = dto == null ? BountyFilter.empty() : dto.toFilter();
+            Minecraft mc = Minecraft.getInstance();
+            if (mc != null) {
+                ServerData server = mc.getCurrentServer();
+                if (server != null && server.ip != null && !server.ip.isBlank()) {
+                    return "server_" + sanitize(server.ip);
+                }
+                IntegratedServer ss = mc.getSingleplayerServer();
+                if (ss != null && ss.getWorldData() != null) {
+                    return "world_" + sanitize(ss.getWorldData().getLevelName());
+                }
             }
-        } catch (Exception e) {
-            Rollwithit.LOGGER.warn("RollWithIt: failed to load filter; using defaults", e);
+        } catch (Throwable t) {
+            // Defensive: Minecraft.getInstance() can be unhappy during very early init.
+            Rollwithit.LOGGER.debug("RollWithIt: context-key lookup failed; using 'default'", t);
+        }
+        return "default";
+    }
+
+    private static Path pathFor(String key) {
+        return PER_CONTEXT_DIR.resolve(key + ".json");
+    }
+
+    private static String sanitize(String s) {
+        return s.replaceAll("[^A-Za-z0-9_.-]", "_");
+    }
+
+    // ------------------------------------------------------------ disk I/O
+
+    private static synchronized void ensureLoadedForCurrentContext() {
+        String key = currentContextKey();
+        if (key.equals(loadedKey)) return;
+        loadedKey = key;
+        loadForKey(key);
+    }
+
+    private static void loadForKey(String key) {
+        Path file = pathFor(key);
+        current = BountyFilter.empty();
+
+        // 1. If we have a per-context file, that wins.
+        if (Files.exists(file)) {
+            try {
+                Dto dto = GSON.fromJson(Files.readString(file), Dto.class);
+                current = dto == null ? BountyFilter.empty() : dto.toFilter();
+                return;
+            } catch (Exception e) {
+                Rollwithit.LOGGER.warn("RollWithIt: failed to load filter for context {}; using defaults", key, e);
+                return;
+            }
+        }
+
+        // 2. Otherwise inherit the legacy global preset (one-time migration) so users coming from
+        //    pre-per-world versions don't lose their setup. We do NOT delete the legacy file —
+        //    other worlds without a per-context file will also pick it up as their seed.
+        if (Files.exists(LEGACY_FILE)) {
+            try {
+                Dto dto = GSON.fromJson(Files.readString(LEGACY_FILE), Dto.class);
+                if (dto != null) {
+                    current = dto.toFilter();
+                    Rollwithit.LOGGER.info(
+                            "RollWithIt: seeded filter for context '{}' from legacy filter.json", key);
+                }
+            } catch (Exception e) {
+                Rollwithit.LOGGER.warn("RollWithIt: failed to read legacy filter.json", e);
+            }
         }
     }
 
     private static void save() {
+        if (loadedKey == null) loadedKey = currentContextKey();
+        Path file = pathFor(loadedKey);
         try {
-            Files.createDirectories(FILE.getParent());
+            Files.createDirectories(file.getParent());
             String json = GSON.toJson(Dto.from(current));
-            Path tmp = FILE.resolveSibling(FILE.getFileName() + ".tmp");
+            Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
             Files.writeString(tmp, json);
             try {
-                Files.move(tmp, FILE,
+                Files.move(tmp, file,
                         StandardCopyOption.REPLACE_EXISTING,
                         StandardCopyOption.ATOMIC_MOVE);
             } catch (IOException atomicFailed) {
                 // Some filesystems (older NFS, certain Windows configs) reject ATOMIC_MOVE.
-                Files.move(tmp, FILE, StandardCopyOption.REPLACE_EXISTING);
+                Files.move(tmp, file, StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (Exception e) {
-            Rollwithit.LOGGER.warn("RollWithIt: failed to save filter", e);
+            Rollwithit.LOGGER.warn("RollWithIt: failed to save filter for context {}", loadedKey, e);
         }
     }
 
