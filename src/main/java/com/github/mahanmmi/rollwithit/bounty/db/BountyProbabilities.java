@@ -21,9 +21,10 @@ import java.util.Set;
  *       with probability {@code E.weight / Σ entry weights}.</li>
  * </ol>
  * Reward-item probabilities then marginalize over the resulting reward pool and apply the
- * "at least one of N stacks" formula {@code 1 − (1 − p)^E[N]}, where {@code E[N]} is the average
- * number of stacks rolled out of the pool's {@code ItemStackPool}. This matches the
- * "{@code P(rare) × itemChanceInRarePool}" mental model the UI surfaces.
+ * exact "at least one of N stacks" expectation {@code E_N[1 − (1 − p)^N]} where {@code N} is
+ * uniform over {@code [minTotalStacks, maxTotalStacks]} (matching VH's
+ * {@code ItemStackPool.getRandomAmount()} / {@code getRandomEntries()} with replacement). This
+ * matches the "{@code P(rare) × itemChanceInRarePool}" mental model the UI surfaces.
  * <p>
  * Construction is O(tasks + rewards); lookups are O(rows for that type/pool). Reuse one instance
  * per screen rebuild rather than per row.
@@ -113,8 +114,7 @@ public final class BountyProbabilities {
             if (total == 0 || matching == 0) continue;
 
             double pPerStack = matching / (double) total;
-            double avgStacks = Math.max(1.0, (row.minTotalStacks() + row.maxTotalStacks()) / 2.0);
-            double pInPool = 1.0 - Math.pow(1.0 - pPerStack, avgStacks);
+            double pInPool = atLeastOneOverUniformN(pPerStack, row.minTotalStacks(), row.maxTotalStacks());
 
             p += pe.getValue() * pInPool;
         }
@@ -193,8 +193,23 @@ public final class BountyProbabilities {
         if (total == 0 || matching == 0) return 0.0;
 
         double pPerStack = matching / (double) total;
-        double avgStacks = Math.max(1.0, (row.minTotalStacks() + row.maxTotalStacks()) / 2.0);
-        return 1.0 - Math.pow(1.0 - pPerStack, avgStacks);
+        return atLeastOneOverUniformN(pPerStack, row.minTotalStacks(), row.maxTotalStacks());
+    }
+
+    /**
+     * Exact {@code E_N[1 − (1 − p)^N]} where {@code N} is uniform over the inclusive integer
+     * range {@code [min, max]}. Matches VH's {@link iskallia.vault.config.entry.ItemStackPool}
+     * which rolls {@code N = MathUtilities.getRandomInt(min, max + 1)} stacks, each an
+     * independent weighted draw (with replacement) from the pool's {@code WeightedList}.
+     * Returns {@code 0} when the range is empty or invalid (pool produces no stacks).
+     */
+    private static double atLeastOneOverUniformN(double pPerStack, int min, int max) {
+        if (max < min || max <= 0) return 0.0;
+        int lo = Math.max(min, 0);
+        double q = 1.0 - pPerStack;
+        double sum = 0.0;
+        for (int n = lo; n <= max; n++) sum += 1.0 - Math.pow(q, n);
+        return sum / (max - lo + 1);
     }
 
     // -------------------------------------------------- helpers
