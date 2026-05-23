@@ -23,8 +23,7 @@ import java.util.Set;
  * Reward-item probabilities then marginalize over the resulting reward pool and apply the
  * exact "at least one of N stacks" expectation {@code E_N[1 − (1 − p)^N]} where {@code N} is
  * uniform over {@code [minTotalStacks, maxTotalStacks]} (matching VH's
- * {@code ItemStackPool.getRandomAmount()} / {@code getRandomEntries()} with replacement). This
- * matches the "{@code P(rare) × itemChanceInRarePool}" mental model the UI surfaces.
+ * {@code ItemStackPool.getRandomAmount()} / {@code getRandomEntries()} with replacement).
  * <p>
  * Construction is O(tasks + rewards); lookups are O(rows for that type/pool). Reuse one instance
  * per screen rebuild rather than per row.

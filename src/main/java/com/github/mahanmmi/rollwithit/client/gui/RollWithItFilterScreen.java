@@ -29,14 +29,6 @@ import java.util.function.Predicate;
 /**
  * Bounty filter editor styled to match VH's bounty table — white nine-slice window with two top
  * tabs ("Tasks" / "Rewards") drawn from VH's atlas via {@link ScreenTextures}.
- * <p>
- * The pane is sized responsively against the host {@link Screen}'s width/height so it stays usable
- * on small windows. Each tab renders a single full-width vertical list (paginated) — no overlapping
- * heading text and no multi-column chip grid.
- * <p>
- * Tasks tab nests two sub-tabs ("Types" / "Values"). This keeps the layout one-list-deep at every
- * point and avoids any text floating between buttons.
- * <p>
  * Closing returns to the parent bounty table screen.
  */
 public class RollWithItFilterScreen extends Screen {
@@ -47,17 +39,11 @@ public class RollWithItFilterScreen extends Screen {
     private static final int TAB_GAP = 2;
 
     // Layout constants
-    /** Height of compact rows like the pagination strip and the bottom-bar buttons. */
     private static final int ROW_H        = 13;
-    /** Height of the main task/reward selector rows — taller so the chip text breathes. */
     private static final int SELECT_ROW_H = ROW_H + 4;
     private static final int BOTTOM_BAR_H = 26;
     private static final int PADDING      = 6;
 
-    // Responsive bounds. These intentionally stay tight to roughly match the VH bounty-table
-    // dialog underneath us (~250x200 in scaled px) so the popup feels like a sub-window, not a
-    // full overlay. `Screen#width`/`#height` are already the GUI-scaled Minecraft window
-    // dimensions (Window.getGuiScaledWidth/Height), not the OS monitor size.
     private static final int MIN_PANE_W = 220;
     private static final int MAX_PANE_W = 280;
     private static final int MIN_PANE_H = 150;
@@ -114,10 +100,7 @@ public class RollWithItFilterScreen extends Screen {
 
         this.probs = new BountyProbabilities(db, vaultLevel);
 
-        // Drop anything that's literally unrollable at this level (p == 0). Near-zero entries
-        // (formatted as "<0.01%") still appear — only the actual zeros are hidden.
-        // Sort by the same human-readable label the user sees on the button so the list reads
-        // alphabetically by display name ("Damage Entity" before "Kill Entity"), not by raw id.
+        // Drop anything that's literally unrollable at this level (p == 0) then sort alphabetically.
         this.availableTaskTypes = db.tasksForLevel(vaultLevel).keySet().stream()
                 .filter(rl -> probs.taskType(rl) > 0)
                 .sorted(Comparator.comparing(NameResolver::taskTypeName, String.CASE_INSENSITIVE_ORDER))
@@ -128,7 +111,7 @@ public class RollWithItFilterScreen extends Screen {
                 .toList();
 
         // Backward-compat hygiene: a previously-saved selection may include entries that the
-        // newly-applied 0%-filter would have hidden (e.g. unreachable values for this level, or
+        // 0%-filter would have hidden (e.g. unreachable values for this level, or
         // entries that became rollable=0 after a VH balance change). Drop them silently from the
         // in-memory working set so the user can't see them as "selected but invisible".
         this.taskTypes.removeIf(rl -> probs.taskType(rl) <= 0);
@@ -146,9 +129,7 @@ public class RollWithItFilterScreen extends Screen {
         Iterable<ResourceLocation> source = taskTypes.isEmpty() ? availableTaskTypes : taskTypes;
         for (ResourceLocation type : source) {
             for (String value : db.taskValuesFor(type, vaultLevel)) {
-                // Hide unrollable values (e.g. a type filtered out for level reasons should
-                // never list any of its values, and any value with a zero relative weight
-                // inside its bracket would also be filtered here).
+                // Hide unrollable values
                 if (probs.taskValue(type, value) <= 0) continue;
                 TaskValueEntry e = new TaskValueEntry(type, value);
                 if (seen.add(e)) rows.add(e);
