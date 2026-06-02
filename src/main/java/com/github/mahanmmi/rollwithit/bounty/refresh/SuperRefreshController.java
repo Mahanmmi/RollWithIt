@@ -16,6 +16,7 @@ import iskallia.vault.network.message.bounty.ServerboundRerollMessage;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.item.ItemStack;
 
+import java.lang.reflect.Constructor;
 import java.util.HashSet;
 import java.util.Optional;
 import java.util.Set;
@@ -176,7 +177,90 @@ public final class SuperRefreshController {
         preRerollIds = currentAvailableIds();
         attemptsUsed++;
         responseTimeoutLeft = RESPONSE_TIMEOUT_TICKS;
-        ModNetwork.CHANNEL.sendToServer(new ServerboundRerollMessage(target));
+        ModNetwork.CHANNEL.sendToServer(buildRerollMessage(target));
+    }
+
+    /**
+     * Reflectively constructs a {@code ServerboundRerollMessage}. VH has shipped at least one
+     * signature change to this message (e.g. adding/removing arguments around the pearl rework);
+     * binding to a single hard-coded constructor would crash with {@link NoSuchMethodError} the
+     * moment players update VH ahead of us. We try the historical {@code (UUID)} shape first,
+     * then fall back to any single-{@code UUID}-only constructor, and finally any constructor
+     * whose first parameter is {@code UUID} (filling extras with sane zero/null defaults).
+     */
+    private static ServerboundRerollMessage buildRerollMessage(UUID id) {
+        Constructor<?> ctor = resolveRerollCtor();
+        try {
+            Class<?>[] params = ctor.getParameterTypes();
+            Object[] args = new Object[params.length];
+            args[0] = id;
+            for (int i = 1; i < params.length; i++) args[i] = defaultValueFor(params[i]);
+            return (ServerboundRerollMessage) ctor.newInstance(args);
+        } catch (ReflectiveOperationException e) {
+            throw new IllegalStateException("Failed to invoke ServerboundRerollMessage constructor", e);
+        }
+    }
+
+    private static volatile Constructor<?> rerollCtor;
+
+    private static Constructor<?> resolveRerollCtor() {
+        Constructor<?> cached = rerollCtor;
+        if (cached != null) return cached;
+        synchronized (SuperRefreshController.class) {
+            if (rerollCtor != null) return rerollCtor;
+            Class<?> cls = ServerboundRerollMessage.class;
+            // 1. Exact (UUID) match — what every VH up through 3.21.5 ships.
+            try {
+                Constructor<?> c = cls.getDeclaredConstructor(UUID.class);
+                c.setAccessible(true);
+                Rollwithit.LOGGER.info("ServerboundRerollMessage: using (UUID) constructor");
+                return rerollCtor = c;
+            } catch (NoSuchMethodException ignored) { /* try the next shape */ }
+            // 2. Any constructor whose first param is UUID (newer VH may have added trailing args).
+            Constructor<?> best = null;
+            for (Constructor<?> c : cls.getDeclaredConstructors()) {
+                Class<?>[] p = c.getParameterTypes();
+                if (p.length == 0 || p[0] != UUID.class) continue;
+                if (best == null || p.length < best.getParameterTypes().length) best = c;
+            }
+            if (best == null) {
+                throw new IllegalStateException(
+                        "No ServerboundRerollMessage constructor accepting a UUID found. "
+                        + "VH likely changed its packet shape — RollWithIt needs an update.");
+            }
+            best.setAccessible(true);
+            Rollwithit.LOGGER.warn("ServerboundRerollMessage: (UUID) ctor missing; using {} as fallback",
+                    java.util.Arrays.toString(best.getParameterTypes()));
+            return rerollCtor = best;
+        }
+    }
+
+    /**
+     * Best-effort zero/empty value for an unknown extra constructor parameter.
+     * <p>
+     * The notable special case is enums: Asgard-SMP's VH 3.21.51 added a
+     * {@code BountyType (NORMAL, GREED)} second parameter, and we'd NPE in
+     * {@code ServerboundRerollMessage.encode} if we passed {@code null}. The bounty table our
+     * mod hooks only shows NORMAL bounties, so we deterministically pick a constant named
+     * {@code NORMAL} or {@code DEFAULT} when available, then fall back to the first constant.
+     */
+    private static Object defaultValueFor(Class<?> type) {
+        if (type == ItemStack.class) return ItemStack.EMPTY;
+        if (type.isEnum()) {
+            Object[] constants = type.getEnumConstants();
+            if (constants == null || constants.length == 0) return null;
+            for (Object c : constants) {
+                String n = ((Enum<?>) c).name();
+                if ("NORMAL".equals(n) || "DEFAULT".equals(n)) return c;
+            }
+            return constants[0];
+        }
+        if (!type.isPrimitive()) return null;
+        if (type == boolean.class) return false;
+        if (type == long.class) return 0L;
+        if (type == float.class) return 0f;
+        if (type == double.class) return 0d;
+        return 0; // int / short / byte / char
     }
 
     private void onRerollResponded(Set<UUID> nowIds, BountyContainer container) {
